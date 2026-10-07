@@ -33,6 +33,10 @@ def source_url(value):
     return value if host in ('espn.com','bbc.com','bbc.co.uk') or any(host.endswith('.'+h) for h in ('espn.com','bbc.com','bbc.co.uk')) else None
 
 def initialize_live(db):
+    from server.predictions import initialize_predictions
+    from server.research import initialize_research
+    initialize_predictions(db)
+    initialize_research(db)
     db.executescript('''
     CREATE TABLE IF NOT EXISTS live_observations(
       id INTEGER PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL,
@@ -152,7 +156,8 @@ def collect_feed(db,feed,fetcher=fetch):
             # ESPN requires single-day dates for these feeds. Limit requests;
             # gradually fill historical/future coverage rather than burst 22 days.
             offsets=[0,-1,1]
-            for offset in list(range(-2,-15,-1))+list(range(2,8)):
+            extended=[offset for distance in range(2,15) for offset in (-distance,distance) if offset<=7]
+            for offset in extended:
                 day=(today+timedelta(days=offset)).strftime('%Y%m%d')
                 row=db.execute('SELECT last_success FROM live_days WHERE source=? AND date=?',(feed['id'],day)).fetchone()
                 if not row or time.time()-row[0]>21600:
@@ -220,7 +225,7 @@ def live_summary(db):
         f['age_seconds']=round(age) if age is not None else None
         f['fresh']=f['status']=='ok' and age is not None and age<=STALE_SECONDS
         feeds.append(f)
-    return {'mode':'live observations','enabled':os.environ.get('RESEARCH_LIVE','1')!='0', 'checked_at':utcnow(), 'feeds':feeds,'events':[{**e,'context':context_for(e,events,injuries)} for e in upcoming[:100]],'results':[{**e,'context':context_for(e,events,injuries)} for e in completed[:100]],'news':sorted(news,key=lambda n:n.get('published_at') or '',reverse=True)[:80],'injuries':injuries,'observation_count':db.execute('SELECT COUNT(*) FROM live_observations').fetchone()[0], 'forecast_status':'Unavailable: no validated live forecast model or complete feature coverage.','limitations':['Public endpoints have no guaranteed availability or coverage.','News is attributed reporting, not verified medical information.','Schedule intervals are proxies, not measured fatigue.','Travel, player workloads and injury completeness are unknown.','Synthetic forecasts remain in the separate demo ledger.']}
+    return {'mode':'live observations','enabled':os.environ.get('RESEARCH_LIVE','1')!='0', 'checked_at':utcnow(), 'feeds':feeds,'events':[{**e,'context':context_for(e,events,injuries)} for e in upcoming[:100]],'results':[{**e,'context':context_for(e,events,injuries)} for e in completed[:100]],'news':sorted(news,key=lambda n:n.get('published_at') or '',reverse=True)[:80],'injuries':injuries,'observation_count':db.execute('SELECT COUNT(*) FROM live_observations').fetchone()[0], 'forecasts_count':db.execute('SELECT COUNT(*) FROM outcome_forecasts').fetchone()[0], 'forecast_status':'Experimental result-based forecasts enabled; no validated live model or complete feature coverage.','limitations':['Public endpoints have no guaranteed availability or coverage.','News is attributed reporting, not verified medical information.','Schedule intervals are proxies, not measured fatigue.','Travel, player workloads and injury completeness are unknown.','Synthetic forecasts remain in the separate demo ledger.']}
 
 def run_collector(path,stop):
     while not stop.is_set():
@@ -230,6 +235,13 @@ def run_collector(path,stop):
             for row in feeds:
                 if stop.is_set(): break
                 collect_feed(db,dict(row))
+            from server.predictions import refresh_predictions
+            try:
+                refresh_predictions(db,latest(db,'events'))
+            except Exception as error:
+                with db:
+                    db.execute('INSERT INTO forecast_job VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET last_run=excluded.last_run,error=excluded.error',(utcnow(),f'{type(error).__name__}: forecast cycle failed','[]'))
+                print(json.dumps({'level':'error','service':'forecast-worker','error_type':type(error).__name__}),flush=True)
         finally: db.close()
         stop.wait(15)
 
@@ -237,4 +249,15 @@ def start_collector(path):
     stop=threading.Event()
     if os.environ.get('RESEARCH_LIVE','1')!='0':
         threading.Thread(target=run_collector,args=(path,stop),daemon=True,name='sports-collector').start()
+        threading.Thread(target=run_research,args=(path,stop),daemon=True,name='research-sources').start()
     return stop
+
+def run_research(path,stop):
+    from server.research import collect_source
+    while not stop.is_set():
+        db=connect(path)
+        try:
+            source=db.execute('SELECT * FROM research_sources WHERE next_attempt<=? ORDER BY next_attempt,id LIMIT 1',(time.time(),)).fetchone()
+            if source:collect_source(db,dict(source))
+        finally:db.close()
+        stop.wait(1 if source else 60)

@@ -7,6 +7,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 from server.core import connect, initialize, seed_demo, ledger, metrics, verify, walk_forward
 from server.live import initialize_live, live_summary, start_collector
+from server.predictions import predictions_summary
+from server.research import research_summary
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = Path(os.environ.get('RESEARCH_DB', ROOT / '.data' / 'research.sqlite'))
@@ -21,11 +23,17 @@ class Handler(BaseHTTPRequestHandler):
                 if path=='/api/live':
                     self.respond(200,live_summary(db))
                     return
+                if path=='/api/outcomes':
+                    self.respond(200,predictions_summary(db))
+                    return
+                if path=='/api/research':
+                    self.respond(200,research_summary(db))
+                    return
                 endpoints = {
                     '/api/overview': {'mode':'demo', 'provider':'synthetic-v1', 'model_version':'baseline-logit-v1', 'metrics':metrics(rows), 'forecasts':rows[:8], 'integrity':verify(db), 'walk_forward':walk_forward(rows)},
                     '/api/forecasts':rows,
                     '/api/events':[json.loads(r['payload']) for r in db.execute('SELECT payload FROM provider_events ORDER BY imported_at DESC')],
-                    '/api/health':{'database':'connected', 'integrity':verify(db), 'live_collection_enabled':os.environ.get('RESEARCH_LIVE','1')!='0', 'healthy_live_feeds':sum(f['fresh'] for f in live_summary(db)['feeds']), 'live_forecasts_enabled':False, 'checked_at':datetime.now(timezone.utc).isoformat()},
+                    '/api/health':{'database':'connected', 'integrity':verify(db), 'live_collection_enabled':os.environ.get('RESEARCH_LIVE','1')!='0', 'healthy_live_feeds':sum(f['fresh'] for f in live_summary(db)['feeds']), 'live_forecasts_enabled':os.environ.get('RESEARCH_LIVE','1')!='0', 'forecast_model_status':'experimental, not validated', 'checked_at':datetime.now(timezone.utc).isoformat()},
                     '/api/audit':[dict(r) for r in db.execute('SELECT * FROM audit ORDER BY id DESC LIMIT 200')],
                 }
                 if path not in endpoints:

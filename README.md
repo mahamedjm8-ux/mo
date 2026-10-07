@@ -4,9 +4,12 @@ A local, multi-sport live observation and forecast research dashboard. React + T
 Python standard-library API, and SQLite append-only forecast records.
 
 **Initial implementation, not production-ready.** It does not recommend wagers
-or calculate stakes. All bundled forecasts, ratings, and outcomes are synthetic.
+or calculate stakes. The separate demo ledger contains synthetic forecasts, ratings, and outcomes.
+The new match-outcome ledger uses observed live-source results only.
 The logistic model has illustrative coefficients, not trained parameters.
-The displayed probability range is illustrative, not a confidence interval.
+The demo probability range is illustrative, not a confidence interval. Live
+experimental probabilities are uncalibrated; no individual confidence interval
+or reliable forecasting accuracy is claimed.
 
 ## Open on your Mac (no Node.js required)
 
@@ -54,7 +57,7 @@ relative to initial database creation. Do not mistake them for real schedules.
 
 ## Live sports research (v0.2)
 
-The default **Live research** page collects public observations without API keys:
+The **Live research** page collects public observations without API keys:
 
 - ESPN scoreboards and news: Premier League, Champions League, NBA, NHL, NFL,
   and MLB. Scoreboards request a rolling 14-day lookback and 7-day lookahead,
@@ -87,8 +90,8 @@ confirmations. News that mentions an injury is not converted to a structured
 injury record. Unknown report times stay unknown. The schedule interval is hours
 between the next event's start and the prior known completed event's start;
 it does not measure actual rest or physiological fatigue. Travel distance,
-workload, complete injury coverage, and a validated live forecast model are not
-available. Team season records appear only where the scoreboard supplies them.
+workload, complete injury coverage, and an independently validated live forecast model are not
+available. An experimental, results-only Elo baseline is available separately. Team season records appear only where the scoreboard supplies them.
 Source-supplied scoreboard team statistics and player leader values appear
 in event/result details where available; missing statistics stay missing.
 Real scores never settle synthetic demo forecasts.
@@ -104,6 +107,91 @@ The domains `site.api.espn.com` and `feeds.bbci.co.uk` are needed for collection
 on a Mac, allow outgoing HTTPS in your firewall if necessary. **Feed health**
 shows actual successes and failures. The app never substitutes demo data for a
 failed live feed.
+
+## Match predictions and win/loss tracking (v0.3)
+
+The app opens on **Match predictions**. An experimental Elo model estimates
+home/away outcomes for NBA, NHL and MLB; NFL and soccer include a draw class.
+It uses observed completed ESPN results only. All forecasts are prospective:
+no old games are backfilled into the official forecast ledger or counted as
+historical wins. A fresh installation starts with zero scored forecasts.
+
+Eligibility requires a recently checked, scheduled fixture at least 15 minutes
+before its reported start, at least 8 observed completed league games, and at
+least 2 observed games for both teams. Balanced estimates remain unforecast.
+**Not forecast** lists missing-data and timing reasons. Limits are not lowered
+because the system has been inactive. Source coverage fills gradually; a new
+installation may need time before any event has enough history.
+
+Elo starts at 1500, uses K=20 and scale=400, with no home-advantage coefficient.
+These conventional parameters are explicitly experimental, not tuned or claimed
+validated. Draw probability uses the observed league draw frequency with a
+Dirichlet(1,1,1) prior. The predicted class is the largest estimated probability.
+Ratings update for new forecasts as new completed results are observed; released
+forecasts never change. Preseason/season records may be mixed by the public
+feed, and sparse/incomplete history is a substantial limitation.
+
+### What a win or loss means
+
+- **WIN:** the recorded predicted class matches the reported final-score class.
+- **LOSS:** the recorded predicted class does not match it.
+- **Pending:** no fresh, scorable final result has been observed yet.
+
+A soccer draw is its own class: predicting a team win on a drawn match is a
+loss; correctly predicting a draw is a win. Non-draw sports require a decisive
+final score. The target includes overtime and decisive NHL shootout scores in the reported
+final score. Standard soccer FT/full-time results are supported. Ambiguous
+football penalty statuses, cancellation, missing scores, or stale result feeds
+remain ungraded; pending forecasts are still permanently visible. No betting
+odds, stakes, financial wins/losses or returns are computed.
+
+Original predictions, training-snapshot references, context, model version,
+probabilities, and publication timestamp are hashed and append-only. Publication
+rechecks current fixture identity, start, state, hash and source freshness inside
+a write transaction. Unique event keys prevent duplicate forecasts across job
+retries. Source-reported results are hashed and appended separately. Later
+provider corrections do not silently rewrite an already scored result; this
+version has no correction-resolution UI, so disputed results require a separate
+append-only correction workflow before using them in production reporting.
+
+**Evaluation** shows all recorded correct/incorrect outcomes, accuracy, multiclass
+Brier score (sum of class errors), log loss and top-class calibration. The 95%
+Wilson interval describes observed classification accuracy under independent
+trial assumptions, not confidence in an individual forecast. Zero samples show
+no accuracy; a short streak is not validation. This version does not auto-promote
+new model families, fit injury coefficients, or guarantee improving accuracy. A heuristic monitoring gate pauses new
+forecasts after at least 30 scored forecasts if Brier or log loss is worse than
+a uniform-class reference. Existing forecasts continue to be scored. This is
+a conservative review policy, not proof of statistical significance; releasing
+a revised model requires a separate evaluated implementation.
+
+## Additional sports research sources
+
+**Research library** lists the 17 preferred sources across the requested sports,
+including FotMob/NBA/NFL/NHL alternatives, plus the original four Reference-site
+sources (21 total). A separate background reader checks public homepages and
+robots rules, retaining readable headings and static statistic-table cells with
+source URL, fetch time and hash. Successful sources are checked every six hours;
+failed sources retry after one hour. Forbidden pages, robots disallows, challenge
+pages, unavailable dynamic content and paywalls are not bypassed. A readable
+homepage does not establish permission or technical support for bulk/API access.
+
+All readable evidence is used in the research library. Exact team-name matches
+available before publication can also be referenced in a forecast's frozen
+research context. These references are **not numerical model inputs**. Different
+sports, old tables, unknown time ranges, and ambiguous player identities cannot
+be defensibly combined as fitted features without dedicated validated adapters.
+The model's **Features used** and **Not used** fields state that boundary.
+An old update date is shown as reported rather than represented as live data.
+Additional sports beyond the configured six leagues have research sources but
+no match forecast adapter yet.
+
+The Mac server must stay running, with internet access, for observation,
+forecasting and automatic scoring. Data survives restarts in `.data/`. When
+installing an update, stop the old server, preserve this hidden folder (Finder:
+Command+Shift+period), and copy it into the new extracted project folder before
+starting. Never replace or delete a ledger to reset losses. Running the app on
+two machines creates separate local ledgers; it does not synchronize them.
 
 ## FotMob fixture imports
 
@@ -152,7 +240,7 @@ or claimed validated in this version.
 
 ## Endpoints
 
-`GET /api/live`, `/api/overview`, `/api/forecasts`, `/api/events`, `/api/health`, `/api/audit`.
+`GET /api/outcomes`, `/api/research`, `/api/live`, `/api/overview`, `/api/forecasts`, `/api/events`, `/api/health`, `/api/audit`.
 The live endpoint is separate from demo forecast endpoints. No remote write endpoint.
 
 ## Container
