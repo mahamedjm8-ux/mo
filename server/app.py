@@ -26,6 +26,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path=='/api/outcomes':
                     self.respond(200,predictions_summary(db))
                     return
+                if path=='/api/score-forecasts':
+                    from server.score_forecasts import summary
+                    self.respond(200,summary(db))
+                    return
                 if path=='/api/research':
                     self.respond(200,research_summary(db))
                     return

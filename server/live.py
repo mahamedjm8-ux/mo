@@ -237,7 +237,10 @@ def run_collector(path,stop):
                 collect_feed(db,dict(row))
             from server.predictions import refresh_predictions
             try:
-                refresh_predictions(db,latest(db,'events'))
+                events=latest(db,'events')
+                refresh_predictions(db,events)
+                from server.score_forecasts import refresh
+                refresh(db,events,datetime.now(timezone.utc))
             except Exception as error:
                 with db:
                     db.execute('INSERT INTO forecast_job VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET last_run=excluded.last_run,error=excluded.error',(utcnow(),f'{type(error).__name__}: forecast cycle failed','[]'))

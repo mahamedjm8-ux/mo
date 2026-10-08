@@ -169,7 +169,7 @@ def evaluation(rows):
     interval=None
     if n:
         z=1.96;den=1+z*z/n;centre=(accuracy+z*z/(2*n))/den;half=z*math.sqrt(accuracy*(1-accuracy)/n+z*z/(4*n*n))/den;interval=[max(0,centre-half),min(1,centre+half)]
-    return {'total':len(rows),'wins':wins,'losses':n-wins,'pending':len(rows)-n,'scored':n,'accuracy':accuracy,'accuracy_interval':interval,'brier':sum(sum((r['probabilities'][c]-int(c==r['result']['outcome']))**2 for c in ('home','draw','away')) for r in scored)/n if n else None,'log_loss':-sum(math.log(max(r['probabilities'][r['result']['outcome']],1e-15)) for r in scored)/n if n else None,'calibration':buckets,'definition':'Win = correct match-outcome class; loss = incorrect class. No wagers or financial returns.'}
+    return {'total':len(rows),'wins':wins,'losses':n-wins,'pending':len(rows)-n,'scored':n,'accuracy':accuracy,'accuracy_interval':interval,'brier':sum(sum((r['probabilities'][c]-int(c==r['result']['outcome']))**2 for c in r['probabilities']) for r in scored)/n if n else None,'log_loss':-sum(math.log(max(r['probabilities'][r['result']['outcome']],1e-15)) for r in scored)/n if n else None,'calibration':buckets,'definition':'Win = correct match-outcome class; loss = incorrect class. No wagers or financial returns.'}
 
 def verify_predictions(db):
     return all(digest(json.loads(r['payload']))==r['hash'] for table in ('outcome_forecasts','outcome_results') for r in db.execute(f'SELECT payload,hash FROM {table}'))

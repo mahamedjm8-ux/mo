@@ -252,3 +252,13 @@ docker run --rm -p 8000:8000 -v courtside-data:/app/.data courtside
 ```
 
 Container build is supplied but requires Docker and was not validated here.
+
+### Score-event forecasts
+
+In Match predictions, open **Score forecasts** for combined final-score totals, signed home-team margins, and both teams scoring in soccer. These are non-wagering research events at fixed thresholds, not imported sportsbook lines or ranked plays. Defaults: total thresholds NBA 220.5, NFL 44.5, NHL 5.5, MLB 8.5, soccer 2.5; home margin thresholds ±5.5, ±6.5, ±1.5, ±1.5, ±1.5 respectively. “No” means at or below the threshold; half-point thresholds avoid pushes. Scores use the same provider final-score scope as winner forecasts, including overtime/NHL shootout scoring, and exclude football penalty outcomes.
+
+The experimental score-frequency baseline requires 20 observed completed league matches and five per team. It pools unique matches involving either team, orients score margins toward the fixture home team, and shrinks binary event frequencies toward a Laplace-smoothed league rate with prior weight 10. Shared matches count once. It does not estimate a calibrated full score distribution or use invented injury/news weights. Its minimum sample is an eligibility rule, not proof of accuracy.
+
+The **60%+ estimated probability** filter includes both successful and unsuccessful forecasts based on their original probability. All eligible targets, including those below 60%, stay permanently recorded; exports include the entire score ledger. Accuracy is calculated separately for the selected target/probability cohort, and remains unknown until prospective results are scored. Multiple targets from one match are correlated; total counts are not independent matches. At least 30 distinct scored matches in a target family are required for the heuristic review gate, which pauses new forecasts if binary Brier or log loss exceeds the uniform reference. Existing records still score. There is no automatic model promotion or guarantee of 60% accuracy.
+
+`/api/score-forecasts` exposes immutable forecasts, result snapshots, hashes, per-type evaluation, the 60% cohort, exclusions and monitoring. Keep the server running to collect and score; a fresh installation can need days or weeks to collect enough team history. When updating the GitHub ZIP on Mac, stop the previous server, preserve the hidden `.data` folder in the new project folder, then run `python3 -m server.app`.
