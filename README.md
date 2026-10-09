@@ -60,7 +60,7 @@ relative to initial database creation. Do not mistake them for real schedules.
 The **Live research** page collects public observations without API keys:
 
 - ESPN scoreboards and news: Premier League, Champions League, NBA, NHL, NFL,
-  and MLB. Scoreboards request a rolling 14-day lookback and 7-day lookahead,
+  and MLB. Scoreboards request a rolling 90-day lookback and 7-day lookahead,
   subject to provider response limits. Each cycle checks today, yesterday,
   tomorrow, and one additional date. Wider coverage fills gradually; it is not
   a complete historical schedule and may take roughly two hours to warm up.
@@ -262,3 +262,15 @@ The experimental score-frequency baseline requires 20 observed completed league 
 The **60%+ estimated probability** filter includes both successful and unsuccessful forecasts based on their original probability. All eligible targets, including those below 60%, stay permanently recorded; exports include the entire score ledger. Accuracy is calculated separately for the selected target/probability cohort, and remains unknown until prospective results are scored. Multiple targets from one match are correlated; total counts are not independent matches. At least 30 distinct scored matches in a target family are required for the heuristic review gate, which pauses new forecasts if binary Brier or log loss exceeds the uniform reference. Existing records still score. There is no automatic model promotion or guarantee of 60% accuracy.
 
 `/api/score-forecasts` exposes immutable forecasts, result snapshots, hashes, per-type evaluation, the 60% cohort, exclusions and monitoring. Keep the server running to collect and score; a fresh installation can need days or weeks to collect enough team history. When updating the GitHub ZIP on Mac, stop the previous server, preserve the hidden `.data` folder in the new project folder, then run `python3 -m server.app`.
+
+### Expanded score research (v0.4)
+
+The fixed research grid now includes three combined-score thresholds and five signed home-margin thresholds per supported league (eight events per eligible match, plus both-teams-score in soccer). No odds or bookmaker lines are collected. Increasing related target counts does not increase independent evidence or demonstrate lower risk. Existing v1 forecasts remain unchanged and keep their original targets; new v2 records use the expanded grid.
+
+Score v2 limits history to 90 days, excludes source-labelled preseason/exhibition/friendly matches, and removes team matches from the league-prior background to avoid counting them twice. Missing match-type labels remain a data limitation; season and competition phases are not fully mapped. Empirical Wilson intervals describe historical team-event frequency, not model confidence or future accuracy. Weak directional frequency evidence is identified. Probabilities may decrease after removing duplicate evidence; they are never raised to meet a target.
+
+Score cards now offer sport, threshold, status, and 60/70/80% estimate filters, with pagination and complete-ledger export. Evidence review separates sport, threshold and model version, showing prospective accuracy intervals, mean estimated probability, calibration gap, Brier and log loss. Global and per-league review gates still require 30 distinct scored matches before pausing underperformance, and recorded results are scored before new publication. No automatic promotion follows a high observed win rate.
+
+Schedule/injury context and team-name-matched public source references are frozen with new score forecasts; numerical effects remain unvalidated and are not used. The research library retains more static headings/table cells and distinguishes recent successful checks, table coverage, and unknown data-update freshness. Wider collection gradually fills 90 past days and seven future days using at most four scoreboard requests per source per polling cycle. Unknown dates are prioritized; older historical dates recheck daily, recent dates every six hours. Public-source failures may limit coverage.
+
+On Mac, stop the server with Control-C, download the new GitHub ZIP, copy your hidden `.data` folder into the new extracted project, then restart `python3 -m server.app`. Keep Terminal running for collection and scoring.

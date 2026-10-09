@@ -50,7 +50,7 @@ class EvidenceParser(HTMLParser):
             self.current_table.append(' '.join(self.cell).strip()[:300]);self.cell=None
         if tag=='table' and self.current_table is not None:
             cells=self.current_table
-            if cells and not re.search(r'\b(odds|betting|payout|profit|best picks)\b',' '.join(cells),re.I):self.tables.append(cells[:300])
+            if cells and not re.search(r'\b(odds|betting|payout|profit|best picks)\b',' '.join(cells),re.I):self.tables.append(cells[:500])
             self.current_table=None
     def handle_data(self,value):
         if self.skip or not value.strip():return
@@ -83,7 +83,7 @@ def read_page(source,fetcher=request):
     if not title or re.search(r'just a moment|access denied|captcha|attention required|verify you are human',title,re.I):raise ValueError('Page is a challenge or unreadable')
     text=' '.join(parsed.parts)
     updated=re.search(r'(?:Updated:|Latest update:)\s*([^|]{0,80})',text,re.I)
-    return {'title':title[:300],'source_url':url,'headings':parsed.headings[:15],'table_count':len(parsed.tables),'table_samples':parsed.tables[:8],'reported_update_text':updated.group(1).strip() if updated else None,'feature_use':'Research reference only; tables are not mapped or validated as forecasting features.','data_quality':'Unstructured public page; source coverage and report freshness may be unknown.'}
+    return {'title':title[:300],'source_url':url,'headings':parsed.headings[:45],'table_count':len(parsed.tables),'table_samples':parsed.tables[:12],'reported_update_text':updated.group(1).strip() if updated else None,'feature_use':'Research reference only; tables are not mapped or validated as forecasting features.','data_quality':'Unstructured public page; source coverage and report freshness may be unknown.'}
 
 def collect_source(db,source,fetcher=request):
     now=datetime.now(timezone.utc).isoformat()
@@ -114,5 +114,10 @@ def research_summary(db):
         evidence=db.execute('SELECT payload,hash,fetched_at FROM research_evidence WHERE source_id=? ORDER BY id DESC LIMIT 1',(row['id'],)).fetchone()
         row['evidence']={**json.loads(evidence['payload']),'hash':evidence['hash'],'fetched_at':evidence['fetched_at']} if evidence else None
         row['used_in_forecasts']=False
+        checked=datetime.fromisoformat(row['last_success']) if row['last_success'] else None
+        age=(datetime.now(timezone.utc)-checked).total_seconds() if checked else None
+        row['check_fresh']=row['status']=='readable' and age is not None and 0<=age<=43200
+        row['evidence_type']='Static statistic tables' if row['evidence'] and row['evidence']['table_samples'] else 'Headings only' if row['evidence'] else 'No readable snapshot'
+        row['data_freshness']='Source-reported text only; not independently verified' if row['evidence'] and row['evidence']['reported_update_text'] else 'Unknown; retrieval time is not data update time'
         records.append(row)
-    return {'sources':records,'policy':'Public access and site robots rules respected. No logins or paywall bypasses. Public readability is not API access.','forecast_features':'Experimental forecasts currently use observed ESPN match results only. Additional site evidence is retained separately pending verified feature adapters.'}
+    return {'coverage':{'registered':len(records),'recently_readable':sum(r['check_fresh'] for r in records),'with_static_tables':sum(bool(r['evidence'] and r['evidence']['table_samples']) for r in records),'without_verified_update_time':len(records)},'sources':records,'policy':'Public access and site robots rules respected. No logins or paywall bypasses. Public readability is not API access.','forecast_features':'Experimental forecasts currently use observed ESPN match results only. Additional site evidence is retained separately pending verified feature adapters.'}

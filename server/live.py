@@ -16,6 +16,8 @@ LEAGUES = [('soccer','eng.1','Premier League'),('soccer','uefa.champions','Champ
 ALLOWED_HOSTS={'site.api.espn.com','feeds.bbci.co.uk'}
 MAX_BYTES=12_000_000
 STALE_SECONDS=900
+HISTORY_DAYS=90
+FUTURE_DAYS=7
 
 def utcnow(): return datetime.now(timezone.utc).isoformat()
 def timestamp(value):
@@ -153,15 +155,17 @@ def collect_feed(db,feed,fetcher=fetch):
     try:
         if feed['category']=='events':
             today=datetime.now(timezone.utc)
-            # ESPN requires single-day dates for these feeds. Limit requests;
-            # gradually fill historical/future coverage rather than burst 22 days.
+            # Keep the same four-request maximum while gradually widening history.
             offsets=[0,-1,1]
-            extended=[offset for distance in range(2,15) for offset in (-distance,distance) if offset<=7]
+            extended=[offset for distance in range(2,HISTORY_DAYS+1) for offset in (-distance,distance) if offset<=FUTURE_DAYS]
+            candidates=[]
             for offset in extended:
                 day=(today+timedelta(days=offset)).strftime('%Y%m%d')
                 row=db.execute('SELECT last_success FROM live_days WHERE source=? AND date=?',(feed['id'],day)).fetchone()
-                if not row or time.time()-row[0]>21600:
-                    offsets.append(offset); break
+                refresh_after=21600 if offset>=-7 else 86400
+                if not row or time.time()-row[0]>refresh_after:
+                    candidates.append((row[0] if row else 0,abs(offset),offset))
+            if candidates:offsets.append(min(candidates)[2])
             records=[]; fetched_days=[]
             for offset in offsets:
                 day=(today+timedelta(days=offset)).strftime('%Y%m%d')

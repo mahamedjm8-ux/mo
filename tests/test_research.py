@@ -16,6 +16,16 @@ class ResearchTests(unittest.TestCase):
   e=read_page(self.source,self.fetcher)
   self.assertEqual(e['table_count'],1);self.assertEqual(e['table_samples'][0],['Player','Example','10'])
   self.assertEqual(e['headings'],['Team results']);self.assertIsNone(e['reported_update_text'])
+ def test_access_freshness_is_separate_from_data_update_freshness(self):
+  self.assertTrue(collect_source(self.db,self.source,self.fetcher))
+  report=research_summary(self.db)
+  source=next(s for s in report['sources'] if s['id']==self.source['id'])
+  self.assertTrue(source['check_fresh']);self.assertIn('Unknown',source['data_freshness'])
+  self.assertEqual(report['coverage']['recently_readable'],1)
+  self.assertEqual(report['coverage']['with_static_tables'],1)
+  self.db.execute("UPDATE research_sources SET last_success='2020-01-01T00:00:00+00:00' WHERE id=?",(self.source['id'],));self.db.commit()
+  source=next(s for s in research_summary(self.db)['sources'] if s['id']==self.source['id'])
+  self.assertFalse(source['check_fresh'])
  def test_robots_disallow_respected(self):
   def denied(url):return 'User-agent: *\nDisallow: /'
   self.assertFalse(collect_source(self.db,self.source,denied))

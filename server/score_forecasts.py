@@ -5,7 +5,7 @@ from datetime import timedelta
 from server.core import canonical, digest, append_audit
 from server.predictions import aware, outcome, training_events, event_key, SUPPORTED
 
-MODEL='experimental-score-frequency-v1'
+MODEL='experimental-score-frequency-v2'
 TOTALS={'NBA':220.5,'NFL':44.5,'NHL':5.5,'MLB':8.5,'Premier League':2.5,'Champions League':2.5}
 MARGINS={'NBA':5.5,'NFL':6.5,'NHL':1.5,'MLB':1.5,'Premier League':1.5,'Champions League':1.5}
 MIN_LEAGUE=20
@@ -20,13 +20,30 @@ def initialize(db):
     CREATE TRIGGER IF NOT EXISTS score_result_no_update BEFORE UPDATE ON score_results BEGIN SELECT RAISE(ABORT,'Results are immutable'); END;
     CREATE TRIGGER IF NOT EXISTS score_result_no_delete BEFORE DELETE ON score_results BEGIN SELECT RAISE(ABORT,'Results are permanent'); END;''')
 
+TOTAL_STEPS={'NBA':10,'NFL':7,'NHL':1,'MLB':1,'Premier League':1,'Champions League':1}
+
 def targets(league):
-    result=[{'kind':'total','threshold':TOTALS[league],'target_key':'total','description':f'Combined final score above {TOTALS[league]}'}]
-    for threshold in (-MARGINS[league],MARGINS[league]):
+    base=TOTALS[league];step=TOTAL_STEPS[league]
+    result=[]
+    for threshold in (base-step,base,base+step):
+        result.append({'kind':'total','threshold':threshold,'target_key':'total' if threshold==base else f'total:{threshold}','description':f'Combined final score above {threshold}'})
+    margin=MARGINS[league]
+    for threshold in sorted({-2*margin+.5,-margin,.5,margin,2*margin-.5}):
         result.append({'kind':'margin','threshold':threshold,'target_key':f'margin:{threshold}','description':f'Home final-score margin above {threshold:+g}'})
     if league in ('Premier League','Champions League'):
         result.append({'kind':'both_score','threshold':None,'target_key':'both_score','description':'Both teams score at least once'})
     return result
+
+def research_fixture(event):
+    text=str(event.get('match_type') or '').lower()
+    return not any(word in text for word in ('preseason','pre-season','exhibition','friendly'))
+
+def wilson(successes,n):
+    if not n:return None
+    rate=successes/n;z=1.96;den=1+z*z/n
+    centre=(rate+z*z/(2*n))/den
+    half=z*math.sqrt(rate*(1-rate)/n+z*z/(4*n*n))/den
+    return [max(0,centre-half),min(1,centre+half)]
 
 def value(event,target,team=None):
     h,a=float(event['home']['score']),float(event['away']['score'])
@@ -38,6 +55,7 @@ def value(event,target,team=None):
 
 def build(event,events,now):
     if event['league'] not in SUPPORTED:return [],'Unsupported league'
+    if not research_fixture(event):return [],'Preseason, exhibition and friendly fixtures excluded'
     if not event['source'].startswith('espn:') or not event.get('fresh'):return [],'Fresh ESPN fixture required'
     try:
         if event['state']!='pre' or event['completed'] or aware(event['starts_at'])<=now+timedelta(minutes=15):return [],'Pre-match publication at least 15 minutes before start required'
@@ -45,7 +63,7 @@ def build(event,events,now):
     except (KeyError,ValueError,TypeError):return [],'Invalid fixture timestamp'
     h,a=event['home']['id'],event['away']['id']
     if not h or not a or h==a:return [],'Invalid team identities'
-    history=training_events(events,event['league'],now)
+    history=[e for e in training_events(events,event['league'],now) if research_fixture(e) and aware(e['starts_at'])>=now-timedelta(days=90)]
     home=[e for e in history if h in (e['home']['id'],e['away']['id'])]
     away=[e for e in history if a in (e['home']['id'],e['away']['id'])]
     if len(history)<MIN_LEAGUE or min(len(home),len(away))<MIN_TEAM:
@@ -55,7 +73,9 @@ def build(event,events,now):
     refs=[{'event_key':event_key(e),'snapshot_hash':e['content_hash'],'observed_at':e['fetched_at'],'starts_at':e['starts_at']} for e in history]
     records=[]
     for target in targets(event['league']):
-        league_rate=(sum(value(e,target) for e in history)+1)/(len(history)+2)
+        background=[e for e in history if event_key(e) not in relevant]
+        # Team games must not count again as independent league-prior evidence.
+        league_rate=(sum(value(e,target) for e in background)+1)/(len(background)+2)
         samples=[]
         for e in relevant.values():
             orientation=h if h in (e['home']['id'],e['away']['id']) else a
@@ -69,7 +89,8 @@ def build(event,events,now):
         probability=(sum(samples)+PRIOR_WEIGHT*league_rate)/(len(samples)+PRIOR_WEIGHT)
         predicted='yes' if probability>.5 else 'no'
         if probability==.5:continue
-        records.append({**target,'event_key':event_key(event),'event':event['name'],'league':event['league'],'home':event['home']['name'],'away':event['away']['name'],'home_id':h,'away_id':a,'source':event['source'],'source_url':event['source_url'],'starts_at':event['starts_at'],'published_at':now.isoformat(),'model_version':MODEL,'probabilities':{'yes':probability,'no':1-probability},'predicted_outcome':predicted,'estimated_probability':max(probability,1-probability),'league_games':len(history),'team_games':{'home':len(home),'away':len(away)},'unique_team_games':len(samples),'training_snapshot':refs,'training_data_hash':digest(refs),'fixture_snapshot_hash':event['content_hash'],'fixture_snapshot':{k:v for k,v in event.items() if k!='context'},'parameters':{'prior_weight':PRIOR_WEIGHT,'minimum_league_games':MIN_LEAGUE,'minimum_team_games':MIN_TEAM},'uncertainty':'Uncalibrated empirical team-score frequencies shrunk toward the observed league rate. Correlated, incomplete samples; 60% estimated probability is not 60% demonstrated accuracy.','score_scope':'Provider final score, including overtime and decisive NHL shootout score. Penalty outcomes remain ungraded. Fixed research thresholds, not sportsbook lines.'})
+        empirical_interval=wilson(sum(samples) if predicted=='yes' else len(samples)-sum(samples),len(samples))
+        records.append({**target,'event_key':event_key(event),'event':event['name'],'league':event['league'],'home':event['home']['name'],'away':event['away']['name'],'home_id':h,'away_id':a,'source':event['source'],'source_url':event['source_url'],'starts_at':event['starts_at'],'published_at':now.isoformat(),'model_version':MODEL,'probabilities':{'yes':probability,'no':1-probability},'predicted_outcome':predicted,'estimated_probability':max(probability,1-probability),'league_games':len(history),'team_games':{'home':len(home),'away':len(away)},'unique_team_games':len(samples),'background_games':len(background),'empirical_frequency_interval':empirical_interval,'evidence_warning':'Observed frequency interval includes 50%; weak directional evidence' if empirical_interval[0]<=.5 else 'Historical team frequency only; prospective accuracy unproven','training_snapshot':refs,'training_data_hash':digest(refs),'fixture_snapshot_hash':event['content_hash'],'fixture_snapshot':{k:v for k,v in event.items() if k!='context'},'parameters':{'prior_weight':PRIOR_WEIGHT,'minimum_league_games':MIN_LEAGUE,'minimum_team_games':MIN_TEAM,'history_days':90,'league_prior_excludes_team_games':True},'uncertainty':'Uncalibrated empirical team-score frequencies shrunk toward the observed league rate. Correlated, incomplete samples; 60% estimated probability is not 60% demonstrated accuracy.','score_scope':'Provider final score, including overtime and decisive NHL shootout score. Penalty outcomes remain ungraded. Fixed research thresholds, not sportsbook lines.'})
     return records,None
 
 def audit_current(db,event,now,expected_hash):
@@ -90,7 +111,7 @@ def publish(db,record,event,now):
     with db:
         db.execute('BEGIN IMMEDIATE')
         current=audit_current(db,event,now,record['fixture_snapshot_hash'])
-        if not current or current['state']!='pre' or current['completed'] or current['starts_at']!=record['starts_at'] or current['home']['id']!=record['home_id'] or current['away']['id']!=record['away_id']:raise ValueError('Fixture freshness or identity changed')
+        if not current or current['league']!=record['league'] or current['state']!='pre' or current['completed'] or current['starts_at']!=record['starts_at'] or current['home']['id']!=record['home_id'] or current['away']['id']!=record['away_id']:raise ValueError('Fixture freshness or identity changed')
         hash_=digest(record)
         cursor=db.execute('INSERT OR IGNORE INTO score_forecasts VALUES(?,?,?,?,?,?)',(hash_[:24],record['event_key'],record['target_key'],canonical(record),hash_,record['published_at']))
         if cursor.rowcount:append_audit(db,'score_forecast_published',{'forecast_hash':hash_,'event_key':record['event_key'],'target':record['target_key']})
@@ -106,30 +127,43 @@ def metrics(rows):
 
 def monitoring(rows):
     report={}
-    for kind in ('total','margin','both_score'):
-        scored=[r for r in rows if r['kind']==kind and r['result'] is not None]
+    families=[(kind,kind,rows) for kind in ('total','margin','both_score')]
+    families += [(f'{league}:{kind}',kind,[r for r in rows if r['league']==league]) for league in sorted({r['league'] for r in rows}) for kind in ('total','margin','both_score')]
+    for key,kind,scope in families:
+        scored=[r for r in scope if r['kind']==kind and r['result'] is not None]
         m=metrics(scored)
         distinct=len({r['event_key'] for r in scored})
         pause=distinct>=30 and (m['brier']>.5 or m['log_loss']>math.log(2))
-        report[kind]={'scored':len(scored),'distinct_matches':distinct,'pause_new_forecasts':pause,'rule':'After 30 distinct scored matches, pause a target family if Brier or log loss exceeds the uniform binary reference. Heuristic only; related forecasts are correlated.'}
+        report[key]={'scored':len(scored),'distinct_matches':distinct,'pause_new_forecasts':pause,'rule':'After 30 distinct scored matches, pause a target family if Brier or log loss exceeds the uniform binary reference. Global and per-league gates apply. Heuristic only; related forecasts are correlated.'}
+    return report
+
+def research_context(db,event,events,now):
+    from server.live import context_for, latest
+    refs=[]
+    for row in db.execute('SELECT s.name,s.url,s.status,s.last_success,e.payload,e.hash,e.fetched_at FROM research_sources s JOIN research_evidence e ON e.source_id=s.id WHERE e.id=(SELECT MAX(n.id) FROM research_evidence n WHERE n.source_id=s.id)'):
+        if aware(row['fetched_at'])>now:continue
+        evidence=json.loads(row['payload'])
+        text=' '.join(evidence.get('headings',[])+[cell for table in evidence.get('table_samples',[]) for cell in table]).casefold()
+        matched=[event[side]['name'] for side in ('home','away') if event[side]['name'].casefold() in text]
+        if matched:
+            refs.append({'name':row['name'],'url':row['url'],'hash':row['hash'],'fetched_at':row['fetched_at'],'matched_teams':matched,'status_at_publication':row['status'],'use':'Team-name-matched research context only; no probability adjustment'})
+    return {'schedule_and_injuries':context_for(event,events,latest(db,'injuries')),'external_sources':refs,'numerical_use':'None. Injuries, rest and public tables are not fitted probability features.'}
+
+def evidence_report(rows):
+    groups={}
+    for r in rows:
+        key=(r['league'],r['target_key'],r['model_version'])
+        groups.setdefault(key,[]).append(r)
+    report=[]
+    for (league,target,version),group in sorted(groups.items()):
+        scored=[r for r in group if r['result'] is not None]
+        m=metrics(group)
+        mean=sum(r['estimated_probability'] for r in scored)/len(scored) if scored else None
+        report.append({'league':league,'target':target,'model_version':version,'description':group[0]['description'],'metrics':m,'distinct_matches':len({r['event_key'] for r in group}),'mean_scored_probability':mean,'calibration_gap':mean-m['accuracy'] if scored else None,'status':'Insufficient prospective evidence' if len(scored)<50 else 'Prospective evidence available; independent validation still required'})
     return report
 
 def refresh(db,events,now):
     initialize(db)
-    existing={(r['event_key'],r['target_key']) for r in db.execute('SELECT event_key,target_key FROM score_forecasts')}
-    rejected=[]
-    review=monitoring(ledger(db))
-    for event in events:
-        if event.get('completed'):continue
-        records,reason=build(event,events,now)
-        if reason:rejected.append({'event':event['name'],'league':event['league'],'reason':reason})
-        for record in records:
-            if review[record['kind']]['pause_new_forecasts']:
-                rejected.append({'event':event['name'],'league':event['league'],'reason':record['kind']+': model review required'})
-                continue
-            if (record['event_key'],record['target_key']) in existing:continue
-            try:publish(db,record,event,now)
-            except ValueError as error:rejected.append({'event':event['name'],'league':event['league'],'reason':str(error)})
     by_key={event_key(e):e for e in events}
     for record in ledger(db):
         if record['result']:continue
@@ -145,6 +179,23 @@ def refresh(db,events,now):
             if not current or outcome(current) is None:continue
             cursor=db.execute('INSERT OR IGNORE INTO score_results VALUES(?,?,?)',(record['id'],canonical(result),digest(result)))
             if cursor.rowcount:append_audit(db,'score_forecast_scored',{'forecast_id':record['id'],'result_hash':digest(result)})
+    existing={(r['event_key'],r['target_key']) for r in db.execute('SELECT event_key,target_key FROM score_forecasts')}
+    rejected=[]
+    review=monitoring(ledger(db))
+    for event in events:
+        if event.get('completed'):continue
+        records,reason=build(event,events,now)
+        if reason:rejected.append({'event':event['name'],'league':event['league'],'reason':reason})
+        context=None
+        for record in records:
+            if review[record['kind']]['pause_new_forecasts'] or review.get(f"{record['league']}:{record['kind']}",{}).get('pause_new_forecasts',False):
+                rejected.append({'event':event['name'],'league':event['league'],'reason':record['kind']+': model review required'})
+                continue
+            if (record['event_key'],record['target_key']) in existing:continue
+            if context is None:context=research_context(db,event,events,now)
+            record['research_context']=context
+            try:publish(db,record,event,now)
+            except ValueError as error:rejected.append({'event':event['name'],'league':event['league'],'reason':str(error)})
     return rejected
 
 def summary(db):
@@ -158,4 +209,4 @@ def summary(db):
         if not e.get('completed'):
             _,reason=build(e,events,now)
             if reason:exclusions.append({'event':e['name'],'league':e['league'],'reason':reason})
-    return {'model_version':MODEL,'monitoring':monitoring(rows),'exclusions':exclusions,'forecasts':rows,'metrics':metrics(rows),'above_60_metrics':metrics([r for r in rows if r['estimated_probability']>=.6]),'by_kind':{kind:metrics([r for r in rows if r['kind']==kind]) for kind in ('total','margin','both_score')},'integrity':all(digest(json.loads(r['payload']))==r['hash'] for table in ('score_forecasts','score_results') for r in db.execute(f'SELECT payload,hash FROM {table}')),'policy':'All eligible fixed research targets are recorded, including below 60%. Display filtering never removes losses. Probabilities are uncalibrated; no guaranteed accuracy.'}
+    return {'model_version':MODEL,'monitoring':monitoring(rows),'evidence_report':evidence_report(rows),'distinct_matches':len({r['event_key'] for r in rows}),'exclusions':exclusions,'forecasts':rows,'metrics':metrics(rows),'above_60_metrics':metrics([r for r in rows if r['estimated_probability']>=.6]),'by_kind':{kind:metrics([r for r in rows if r['kind']==kind]) for kind in ('total','margin','both_score')},'integrity':all(digest(json.loads(r['payload']))==r['hash'] for table in ('score_forecasts','score_results') for r in db.execute(f'SELECT payload,hash FROM {table}')),'policy':'All eligible fixed research targets are recorded, including below 60%. Display filtering never removes losses. Probabilities are uncalibrated; no guaranteed accuracy.'}

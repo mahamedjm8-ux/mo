@@ -15,6 +15,21 @@ class LiveTests(unittest.TestCase):
     def tearDown(self): self.db.close(); self.tmp.cleanup()
     def getfeed(self): return dict(self.db.execute('SELECT * FROM live_feeds WHERE id=?',(self.feed['id'],)).fetchone())
     def ingest(self,document=None): return collect_feed(self.db,self.getfeed(),lambda _:json.dumps(document or self.document).encode())
+    def test_wider_history_does_not_increase_poll_request_budget(self):
+        import time
+        calls=[]
+        # Simulate recent dates already checked; collection must reach deeper history.
+        for offset in range(-14,8):
+            day=(self.now+timedelta(days=offset)).strftime('%Y%m%d')
+            self.db.execute('INSERT INTO live_days VALUES(?,?,?)',(self.feed['id'],day,time.time()))
+        self.db.commit()
+        def fetcher(url):
+            calls.append(url)
+            return b'{"events":[]}'
+        self.assertTrue(collect_feed(self.db,self.getfeed(),fetcher))
+        self.assertEqual(len(calls),4)
+        deeper=(self.now-timedelta(days=15)).strftime('%Y%m%d')
+        self.assertTrue(any('dates='+deeper in url for url in calls))
     def test_normalization_keeps_evidence_and_omits_odds(self):
         self.document['events'][0]['competitions'][0]['odds']=[{'details':'unwanted'}]
         event=normalize_scoreboard(self.document,'NBA')[0]
